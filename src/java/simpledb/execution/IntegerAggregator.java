@@ -2,17 +2,13 @@ package simpledb.execution;
 
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.Map;
-import java.util.NoSuchElementException;
-
-import simpledb.common.DbException;
 import simpledb.common.Type;
 import simpledb.storage.Field;
 import simpledb.storage.IntField;
 import simpledb.storage.Tuple;
 import simpledb.storage.TupleDesc;
-import simpledb.transaction.TransactionAbortedException;
+import simpledb.storage.TupleIterator;
 
 /**
  * Knows how to compute some aggregate over a set of IntFields.
@@ -133,47 +129,8 @@ public class IntegerAggregator implements Aggregator {
                 result.add(t);
             }
         }
-        return new OpIterator() {
-            private Iterator<Tuple> iter;
-
-            @Override
-            public void open() {
-                iter = result.iterator();
-            }
-
-            @Override
-            public boolean hasNext() throws DbException, TransactionAbortedException {
-                return iter.hasNext();
-            }
-
-            @Override
-            public Tuple next() throws DbException, TransactionAbortedException, NoSuchElementException {
-                // TODO Auto-generated method stub
-                if (!hasNext()) {
-                    throw new NoSuchElementException();
-                }
-                return iter.next();
-            }
-
-            @Override
-            public void rewind() throws DbException, TransactionAbortedException {
-                // TODO Auto-generated method stub
-                iter = result.iterator();
-            }
-
-            @Override
-            public TupleDesc getTupleDesc() {
-                // TODO Auto-generated method stub
-                return td;
-            }
-
-            @Override
-            public void close() {
-                // TODO Auto-generated method stub
-                iter = null;
-            }
-
-        };
+        return new TupleIterator(td, result);
+        
     }
 
     // newly added
