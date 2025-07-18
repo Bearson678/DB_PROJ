@@ -5,6 +5,7 @@ import simpledb.common.DbException;
 import simpledb.storage.Tuple;
 import simpledb.storage.TupleDesc;
 
+import java.lang.reflect.Array;
 import java.util.*;
 
 /**
@@ -23,31 +24,39 @@ public class Filter extends Operator {
      * @param child
      *            The child operator
      */
+    private Predicate p;
+    private OpIterator child;
     public Filter(Predicate p, OpIterator child) {
         // some code goes here
+        this.p = p;
+        this.child = child;
     }
 
     public Predicate getPredicate() {
         // some code goes here
-        return null;
+        return this.p;
     }
 
     public TupleDesc getTupleDesc() {
         // some code goes here
-        return null;
+        return this.child.getTupleDesc();
     }
 
     public void open() throws DbException, NoSuchElementException,
             TransactionAbortedException {
         // some code goes here
+        super.open();
+        this.child.open();
     }
 
     public void close() {
         // some code goes here
+        this.child.close();
     }
 
     public void rewind() throws DbException, TransactionAbortedException {
         // some code goes here
+        this.child.rewind();
     }
 
     /**
@@ -59,21 +68,26 @@ public class Filter extends Operator {
      *         more tuples
      * @see Predicate#filter
      */
-    protected Tuple fetchNext() throws NoSuchElementException,
-            TransactionAbortedException, DbException {
-        // some code goes here
+ protected Tuple fetchNext() throws NoSuchElementException, TransactionAbortedException, DbException {
+        while (child.hasNext()) {
+            Tuple t = child.next();
+            if (p.filter(t)) {
+                return t;
+            }
+        }
         return null;
     }
 
     @Override
     public OpIterator[] getChildren() {
-        // some code goes here
-        return null;
+        return new OpIterator[]{this.child};
     }
 
     @Override
     public void setChildren(OpIterator[] children) {
-        // some code goes here
+        if (children.length != 1) {
+            throw new IllegalArgumentException("Filter requires exactly one child.");
+        }
+        this.child = children[0];
     }
-
 }

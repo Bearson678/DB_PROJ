@@ -8,8 +8,17 @@ import simpledb.transaction.TransactionAbortedException;
 import simpledb.transaction.TransactionId;
 
 import java.io.*;
-
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+
+import javax.print.attribute.standard.PageRanges;
+import javax.xml.crypto.Data;
 
 /**
  * BufferPool manages the reading and writing of pages into memory from
@@ -32,13 +41,16 @@ public class BufferPool {
     other classes. BufferPool should use the numPages argument to the
     constructor instead. */
     public static final int DEFAULT_PAGES = 50;
-
+    public  int numPages;
+    private final Map<Integer, Page> bufferPool;
     /**
      * Creates a BufferPool that caches up to numPages pages.
      *
      * @param numPages maximum number of pages in this buffer pool.
      */
     public BufferPool(int numPages) {
+        this.numPages = numPages;
+        this.bufferPool = Collections.synchronizedMap(new LinkedHashMap<Integer, Page>(numPages, 0.75f, true) );
         // some code goes here
     }
     
@@ -71,10 +83,31 @@ public class BufferPool {
      * @param pid the ID of the requested page
      * @param perm the requested permissions on the page
      */
-    public  Page getPage(TransactionId tid, PageId pid, Permissions perm)
+public  Page getPage(TransactionId tid, PageId pid, Permissions perm)
         throws TransactionAbortedException, DbException {
-        // some code goes here
+        if (perm == Permissions.READ_ONLY | perm == Permissions.READ_WRITE){
+            if (this.bufferPool.size() >= this.numPages){
+                evictPage();
+            }
+            Page toReturn = this.bufferPool.get(pid.hashCode());
+            // return if page found
+            if (toReturn != null){
+                return toReturn;
+            }else {
+            // add page into bufferPool if there is empty page + return it - TODO
+                try {
+                this.bufferPool.put(pid.hashCode(), Database.getCatalog().getDatabaseFile(pid.getTableId()).readPage(pid));
+                return this.bufferPool.get(pid.hashCode());                   
+                } catch (Exception e) {
+                    System.err.println(e);
+                }
+                
+            }
+        } else {
+            throw new TransactionAbortedException(); // cannot be inserted coz write only
+        }
         return null;
+
     }
 
     /**
@@ -139,6 +172,16 @@ public class BufferPool {
         throws DbException, IOException, TransactionAbortedException {
         // some code goes here
         // not necessary for lab1
+        HeapFile hf = (HeapFile) Database.getCatalog().getDatabaseFile(tableId);
+        try {
+           List<Page> pageList = hf.insertTuple(tid, t); //list of dirty pages
+           for (Page p: pageList){ //cache them into bufferpool
+            p.markDirty(true, tid);
+            this.bufferPool.put(p.getId().hashCode(), p);
+        }
+        } catch (Exception e) {
+            System.err.println(e);
+        }
     }
 
     /**
@@ -158,6 +201,13 @@ public class BufferPool {
         throws DbException, IOException, TransactionAbortedException {
         // some code goes here
         // not necessary for lab1
+        int tableId = t.getRecordId().getPageId().getTableId();
+        HeapFile hf = (HeapFile) Database.getCatalog().getDatabaseFile(tableId);
+        List<Page> pageList = hf.deleteTuple(tid, t);
+        for (Page p: pageList){ //cache them into bufferpool
+            p.markDirty(true, tid);
+            this.bufferPool.put(p.getId().hashCode(), p);
+        }
     }
 
     /**
@@ -168,6 +218,17 @@ public class BufferPool {
     public synchronized void flushAllPages() throws IOException {
         // some code goes here
         // not necessary for lab1
+        Page[] pages;
+        synchronized (bufferPool) {
+            pages = bufferPool.values().toArray(new Page[0]);
+        }
+
+        // Flush each page (no iteration over LinkedHashMap)
+        for (Page p : pages) {
+            if (p != null && p.isDirty() != null) {
+                flushPage(p.getId());
+            }
+        }
 
     }
 
@@ -182,6 +243,7 @@ public class BufferPool {
     public synchronized void discardPage(PageId pid) {
         // some code goes here
         // not necessary for lab1
+        bufferPool.remove(pid.hashCode());
     }
 
     /**
@@ -191,6 +253,16 @@ public class BufferPool {
     private synchronized  void flushPage(PageId pid) throws IOException {
         // some code goes here
         // not necessary for lab1
+        if(!bufferPool.containsKey(pid.hashCode())){
+            return;
+        }
+        Page p = bufferPool.get(pid.hashCode());
+        if(p.isDirty()!=null){
+            DbFile df = Database.getCatalog().getDatabaseFile(pid.getTableId());
+            df.writePage(p);
+            p.markDirty(false, null);
+        }
+
     }
 
     /** Write all pages of the specified transaction to disk.
@@ -204,9 +276,26 @@ public class BufferPool {
      * Discards a page from the buffer pool.
      * Flushes the page to disk to ensure dirty pages are updated on disk.
      */
-    private synchronized  void evictPage() throws DbException {
+    private synchronized void evictPage() throws DbException {
         // some code goes here
         // not necessary for lab1
-    }
+        if (bufferPool.isEmpty()) {
+            throw new DbException("Buffer pool is empty");
+        }
 
+        // LinkedHashMap's iterator returns entries in LRU order
+        Map.Entry<Integer, Page> eldest = bufferPool.entrySet().iterator().next();
+        PageId pidEvict = eldest.getValue().getId();
+
+        try {
+            if (eldest.getValue().isDirty() != null) {
+                flushPage(pidEvict);
+            }
+        } catch (Exception e) {
+            throw new DbException("Failed to flush dirty page: " + e);
+        }
+
+        discardPage(pidEvict);
+    }
 }
+

@@ -29,25 +29,39 @@ public class Delete extends Operator {
      * @param child
      *            The child operator from which to read tuples for deletion
      */
+    private TransactionId t;
+    private OpIterator child;
+    private int tableId;
+    private TupleDesc td;
+    private Boolean called = false;
     public Delete(TransactionId t, OpIterator child) {
         // some code goes here
+        this.t = t;
+        this.child =child;
+        this.td = new TupleDesc(new Type[]{Type.INT_TYPE}, new String[]{"deleted_rows"});
     }
 
     public TupleDesc getTupleDesc() {
         // some code goes here
-        return null;
+        return this.td;
     }
 
     public void open() throws DbException, TransactionAbortedException {
         // some code goes here
+        this.child.open();
+        super.open();
     }
 
     public void close() {
         // some code goes here
+        this.child.close();
+        super.close();
     }
 
     public void rewind() throws DbException, TransactionAbortedException {
         // some code goes here
+        this.child.rewind();
+        called = false;
     }
 
     /**
@@ -61,18 +75,37 @@ public class Delete extends Operator {
      */
     protected Tuple fetchNext() throws TransactionAbortedException, DbException {
         // some code goes here
-        return null;
+        if(called)return null;
+        called = true;
+        int count = 0;
+        while (child.hasNext()){
+            Tuple nextTuple = child.next();
+            BufferPool bp = Database.getBufferPool();
+            try {
+            bp.deleteTuple(t, nextTuple);
+            count++;                
+            } catch (Exception e) {
+                System.err.println(e);
+            }
+
+        }
+        Tuple resultTuple = new Tuple(this.getTupleDesc());
+        resultTuple.setField(0, new IntField(count));
+        return resultTuple;
     }
 
     @Override
     public OpIterator[] getChildren() {
         // some code goes here
-        return null;
+        return new OpIterator[]{this.child};
     }
 
     @Override
     public void setChildren(OpIterator[] children) {
-        // some code goes here
+        if (children.length != 1) {
+            throw new IllegalArgumentException("Filter requires exactly one child.");
+        }
+        this.child = children[0];
     }
 
 }

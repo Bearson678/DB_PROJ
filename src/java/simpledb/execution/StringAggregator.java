@@ -1,7 +1,18 @@
 package simpledb.execution;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.NoSuchElementException;
+
+import simpledb.common.DbException;
 import simpledb.common.Type;
+import simpledb.storage.Field;
+import simpledb.storage.IntField;
 import simpledb.storage.Tuple;
+import simpledb.storage.TupleDesc;
+import simpledb.transaction.TransactionAbortedException;
 
 /**
  * Knows how to compute some aggregate over a set of StringFields.
@@ -18,9 +29,20 @@ public class StringAggregator implements Aggregator {
      * @param what aggregation operator to use -- only supports COUNT
      * @throws IllegalArgumentException if what != COUNT
      */
-
+    private int gbfield;
+    private Type gbfieldType;
+    private int afield;
+    private Op op;
+    private Map<Field,Integer> counts = new HashMap<>();
     public StringAggregator(int gbfield, Type gbfieldtype, int afield, Op what) {
         // some code goes here
+        this.gbfield = gbfield;
+        this.gbfieldType = gbfieldtype;
+        this.afield = afield;
+        if(what != Op.COUNT){
+            throw new IllegalArgumentException();
+        }
+        this.op = what;
     }
 
     /**
@@ -29,6 +51,9 @@ public class StringAggregator implements Aggregator {
      */
     public void mergeTupleIntoGroup(Tuple tup) {
         // some code goes here
+        Field grouping = (gbfield == NO_GROUPING) ? null : tup.getField(this.gbfield);
+        int currentCount = counts.getOrDefault(grouping, 0);
+        counts.put(grouping, currentCount + 1);   
     }
 
     /**
@@ -41,7 +66,66 @@ public class StringAggregator implements Aggregator {
      */
     public OpIterator iterator() {
         // some code goes here
-        throw new UnsupportedOperationException("please implement me for lab2");
-    }
+        ArrayList<Tuple> result = new ArrayList<>();
+        TupleDesc td;
+        if (gbfield == NO_GROUPING) {
+            td = new TupleDesc(new Type[] { Type.INT_TYPE });
+            Field group = null;
+            int aggvalue = counts.getOrDefault(group,0);
+            Tuple t = new Tuple(td);
+            t.setField(0, new IntField(aggvalue));
+            result.add(t);
 
+        } else {
+            td = new TupleDesc(new Type[] { this.gbfieldType, Type.INT_TYPE });
+            for (Field group : counts.keySet()) {
+                int aggvalue = counts.getOrDefault(group,0);;
+                Tuple t = new Tuple(td);
+                t.setField(0, group);
+                t.setField(1, new IntField(aggvalue));
+                result.add(t);
+            }
+        }
+        return new OpIterator() {
+            private Iterator<Tuple> iter;
+
+            @Override
+            public void open() {
+                iter = result.iterator();
+            }
+
+            @Override
+            public boolean hasNext() throws DbException, TransactionAbortedException {
+                return iter.hasNext();
+            }
+
+            @Override
+            public Tuple next() throws DbException, TransactionAbortedException, NoSuchElementException {
+                // TODO Auto-generated method stub
+                if (!hasNext()) {
+                    throw new NoSuchElementException();
+                }
+                return iter.next();
+            }
+
+            @Override
+            public void rewind() throws DbException, TransactionAbortedException {
+                // TODO Auto-generated method stub
+                iter = result.iterator();
+            }
+
+            @Override
+            public TupleDesc getTupleDesc() {
+                // TODO Auto-generated method stub
+                return td;
+            }
+
+            @Override
+            public void close() {
+                // TODO Auto-generated method stub
+                iter = null;
+            }
+
+        };
+    }
 }

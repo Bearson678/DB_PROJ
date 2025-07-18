@@ -1,16 +1,15 @@
 package simpledb.common;
 
-import simpledb.common.Type;
-import simpledb.storage.DbFile;
-import simpledb.storage.HeapFile;
-import simpledb.storage.TupleDesc;
-
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import simpledb.storage.DbFile;
+import simpledb.storage.HeapFile;
+import simpledb.storage.TupleDesc;
+
 
 /**
  * The Catalog keeps track of all available tables in the database and their
@@ -23,12 +22,29 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class Catalog {
 
+    private ConcurrentHashMap<String, Table> catalog;
+
+    // m: Create inner class obj to store as items in the catalog - each object rep 1 table
+
+    class Table{
+        DbFile file;
+        String name;
+        String pkeyField;
+
+        Table(DbFile file, String name, String pkeyField){
+            this.file = file;
+            this.name = name;
+            this.pkeyField = pkeyField;
+        }
+    }
+
     /**
      * Constructor.
      * Creates a new, empty catalog.
      */
     public Catalog() {
         // some code goes here
+        this.catalog = new ConcurrentHashMap<>();
     }
 
     /**
@@ -41,7 +57,27 @@ public class Catalog {
      * @param pkeyField the name of the primary key field
      */
     public void addTable(DbFile file, String name, String pkeyField) {
+        
         // some code goes here
+        // m: create table object and add into catalog
+        if (name != null){
+            Table newTable = new Table(file, name, pkeyField);
+            
+            // check for duplicate name & remove if need
+            if (this.catalog.get(name) != null){
+                this.catalog.remove(name);
+            }
+
+            // check for duplicate ID & remove if need
+            String checkId = this.getTableName(file.getId()); 
+            if (checkId != null){
+                this.catalog.remove(checkId);
+            }
+
+            this.catalog.put(name, newTable);
+        }
+        
+
     }
 
     public void addTable(DbFile file, String name) {
@@ -65,7 +101,16 @@ public class Catalog {
      */
     public int getTableId(String name) throws NoSuchElementException {
         // some code goes here
-        return 0;
+        if (name == null){
+            throw new NoSuchElementException();
+        }
+        Table table = this.catalog.get(name);
+        if (table == null){
+            throw new NoSuchElementException();
+        }else{
+            return table.file.getId();
+        }
+        
     }
 
     /**
@@ -76,7 +121,17 @@ public class Catalog {
      */
     public TupleDesc getTupleDesc(int tableid) throws NoSuchElementException {
         // some code goes here
-        return null;
+
+        // iterate through catalog, check each tableid and return tupledesc if matches
+        Iterator<ConcurrentHashMap.Entry<String, Table>> i = catalog.entrySet().iterator();
+        while (i.hasNext()){
+            ConcurrentHashMap.Entry<String, Table> entry = i.next();
+            if(entry.getValue().file.getId() == tableid){
+                return entry.getValue().file.getTupleDesc(); // return tupledesc
+            }
+        }
+
+        throw new NoSuchElementException(); // if table with specified id doesn't exist
     }
 
     /**
@@ -87,27 +142,57 @@ public class Catalog {
      */
     public DbFile getDatabaseFile(int tableid) throws NoSuchElementException {
         // some code goes here
-        return null;
+
+        Iterator<ConcurrentHashMap.Entry<String, Table>> i = catalog.entrySet().iterator();
+        while (i.hasNext()){
+            ConcurrentHashMap.Entry<String, Table> entry = i.next();
+            if(entry.getValue().file.getId() == tableid){
+                return entry.getValue().file; // return dbfile
+            }
+        }
+
+        throw new NoSuchElementException(); // if table with specified id doesn't exist
     }
 
     public String getPrimaryKey(int tableid) {
         // some code goes here
-        return null;
+        Iterator<ConcurrentHashMap.Entry<String, Table>> i = catalog.entrySet().iterator();
+        while (i.hasNext()){
+            ConcurrentHashMap.Entry<String, Table> entry = i.next();
+            if(entry.getValue().file.getId() == tableid){
+                return entry.getValue().pkeyField; // return pkey
+            }
+        }
+        return null; // if table with specified id doesn't exist
     }
 
-    public Iterator<Integer> tableIdIterator() {
+    public Iterator<Integer> tableIdIterator() { // have not implemented
         // some code goes here
-        return null;
+        ArrayList<Integer> tableIdList = new ArrayList<>();
+        Iterator<ConcurrentHashMap.Entry<String, Table>> i = catalog.entrySet().iterator();
+        while (i.hasNext()){
+            ConcurrentHashMap.Entry<String, Table> entry = i.next();
+            tableIdList.add(entry.getValue().file.getId());
+        }
+        return tableIdList.iterator();        
     }
 
-    public String getTableName(int id) {
+    public String getTableName(int id) { 
         // some code goes here
-        return null;
+        Iterator<ConcurrentHashMap.Entry<String, Table>> i = catalog.entrySet().iterator();
+        while (i.hasNext()){
+            ConcurrentHashMap.Entry<String, Table> entry = i.next();
+            if(entry.getValue().file.getId() == id){
+                return entry.getKey(); // return table name
+            }
+        }
+        return null; // if table with specified id doesn't exist
     }
     
     /** Delete all tables from the catalog */
     public void clear() {
         // some code goes here
+        this.catalog = new ConcurrentHashMap<>(); // replace catalog attribute
     }
     
     /**
@@ -165,4 +250,3 @@ public class Catalog {
         }
     }
 }
-

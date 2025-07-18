@@ -25,13 +25,20 @@ public class Join extends Operator {
      * @param child2
      *            Iterator for the right(inner) relation to join
      */
+    private JoinPredicate p;
+    private OpIterator child1;
+    private OpIterator child2;
+
     public Join(JoinPredicate p, OpIterator child1, OpIterator child2) {
         // some code goes here
+        this.p = p;
+        this.child1 = child1;
+        this.child2 = child2;
     }
 
     public JoinPredicate getJoinPredicate() {
         // some code goes here
-        return null;
+        return this.p;
     }
 
     /**
@@ -41,7 +48,9 @@ public class Join extends Operator {
      * */
     public String getJoinField1Name() {
         // some code goes here
-        return null;
+        TupleDesc td1 = this.child1.getTupleDesc();
+
+        return td1.getFieldName(this.p.getField1());
     }
 
     /**
@@ -51,7 +60,8 @@ public class Join extends Operator {
      * */
     public String getJoinField2Name() {
         // some code goes here
-        return null;
+        TupleDesc td2 = this.child2.getTupleDesc();
+        return td2.getFieldName(this.p.getField2());
     }
 
     /**
@@ -60,20 +70,28 @@ public class Join extends Operator {
      */
     public TupleDesc getTupleDesc() {
         // some code goes here
-        return null;
+        return TupleDesc.merge(this.child1.getTupleDesc(),this.child2.getTupleDesc());
     }
 
     public void open() throws DbException, NoSuchElementException,
             TransactionAbortedException {
         // some code goes here
+        this.child1.open();
+        this.child2.open();
+        super.open();
     }
 
     public void close() {
         // some code goes here
+        super.close();
+        this.child1.close();
+        this.child2.close();
     }
 
     public void rewind() throws DbException, TransactionAbortedException {
         // some code goes here
+        this.child1.rewind();
+        this.child2.rewind();
     }
 
     /**
@@ -89,25 +107,61 @@ public class Join extends Operator {
      * columns can be done with an additional projection operator if needed.)
      * <p>
      * For example, if one tuple is {1,2,3} and the other tuple is {1,5,6},
-     * joined on equality of the first column, then this returns {1,2,3,1,5,6}.
+     * combined on equality of the first column, then this returns {1,2,3,1,5,6}.
      * 
      * @return The next matching tuple.
      * @see JoinPredicate#filter
      */
-    protected Tuple fetchNext() throws TransactionAbortedException, DbException {
-        // some code goes here
-        return null;
+private Tuple outerTuple = null;
+
+@Override
+protected Tuple fetchNext() throws TransactionAbortedException, DbException {
+    while (outerTuple != null || this.child1.hasNext()) {
+        if (outerTuple == null && this.child1.hasNext()) {
+            outerTuple = this.child1.next();
+            this.child2.rewind();
+        }
+
+        while (this.child2.hasNext()) {
+            Tuple innerTuple = this.child2.next();
+            if (p.filter(outerTuple, innerTuple)) {
+                // Merge the two tuples into one
+                TupleDesc mergedTd = TupleDesc.merge(outerTuple.getTupleDesc(), innerTuple.getTupleDesc());
+                Tuple combined = new Tuple(mergedTd);
+
+                int i = 0;
+                for (; i < outerTuple.getTupleDesc().numFields(); i++) {
+                    combined.setField(i, outerTuple.getField(i));
+                }
+                for (int j = 0; j < innerTuple.getTupleDesc().numFields(); j++) {
+                    combined.setField(i + j, innerTuple.getField(j));
+                }
+
+                return combined;
+            }
+        }
+
+        // No more matches for this outer tuple
+        outerTuple = null;
     }
 
-    @Override
-    public OpIterator[] getChildren() {
-        // some code goes here
-        return null;
-    }
+    return null; // No more matches
+}
 
-    @Override
-    public void setChildren(OpIterator[] children) {
-        // some code goes here
+
+@Override
+public OpIterator[] getChildren() {
+    return new OpIterator[]{child1, child2};
+}
+
+@Override
+public void setChildren(OpIterator[] children) {
+    if (children.length != 2) {
+        throw new IllegalArgumentException("Join operator requires exactly two children.");
     }
+    this.child1 = children[0];
+    this.child2 = children[1];
+}
+
 
 }
