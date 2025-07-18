@@ -78,11 +78,7 @@ public class Aggregate extends Operator {
      */
     public String groupFieldName() {
         // some code goes here
-        try {
-            return this.child.getTupleDesc().getFieldName(gfield);
-        } catch (NoSuchElementException e) {
-            return null;
-        }
+        return this.child.getTupleDesc().getFieldName(this.groupField());
     }
 
     /**
