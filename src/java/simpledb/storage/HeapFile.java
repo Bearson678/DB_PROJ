@@ -1,15 +1,13 @@
 package simpledb.storage;
 
-import simpledb.common.Database;
-import simpledb.common.DbException;
-import simpledb.common.Debug;
-import simpledb.common.Permissions;
-import simpledb.transaction.TransactionAbortedException;
-import simpledb.transaction.TransactionId;
-
 import java.io.*;
 import java.nio.ByteBuffer;
 import java.util.*;
+import simpledb.common.Database;
+import simpledb.common.DbException;
+import simpledb.common.Permissions;
+import simpledb.transaction.TransactionAbortedException;
+import simpledb.transaction.TransactionId;
 
 /**
  * HeapFile is an implementation of a DbFile that stores a collection of tuples
@@ -80,14 +78,18 @@ public class HeapFile implements DbFile {
 
         ByteBuffer buffer = ByteBuffer.allocate(BufferPool.getPageSize());
 
-            try(RandomAccessFile file = new RandomAccessFile(this.file, "r")){
-            file.seek(offset);
-            file.read(buffer.array());
-            return new HeapPage((HeapPageId)pid, buffer.array());
-            }catch(Exception e){
-                System.err.println(e);
-            }
-            return null;
+        try(RandomAccessFile file = new RandomAccessFile(this.file, "r")){
+        file.seek(offset);
+        file.read(buffer.array());
+        return new HeapPage((HeapPageId)pid, buffer.array());
+        } catch (IllegalArgumentException e){
+            throw new IllegalArgumentException("page does not exist in this file");
+        }
+        catch(Exception e){
+            System.err.println(e);
+            
+        }
+        return null;
             
     }
 
@@ -103,6 +105,7 @@ public class HeapFile implements DbFile {
             file.close();
         } catch (Exception e) {
             System.err.println(e);
+            throw new IOException("write failed");
         }
     }
 
@@ -118,26 +121,53 @@ public class HeapFile implements DbFile {
     public List<Page> insertTuple(TransactionId tid, Tuple t)
             throws DbException, IOException, TransactionAbortedException {
         // some code goes here
-        int numOfPages = this.numPages();
-        int tableId = getId();
-        BufferPool bpool = Database.getBufferPool();
-        for(int p=0;p<numOfPages;p++){
-            HeapPageId pId = new HeapPageId(tableId, p);
-            HeapPage hp = (HeapPage) bpool.getPage(tid, pId, Permissions.READ_WRITE);
-            if(hp.getNumEmptySlots()>0){ //if have space,write tuple into the page, mark as dirty
-                hp.insertTuple(t);
-                hp.markDirty(true, tid);
-                return new ArrayList<Page>(Arrays.asList(new Page[]{hp}));
-            }
-        }
-        //if no free space in the heappage, create a new Heappage Id and heappage and
-        //wrie the page into the heapfile
-        HeapPageId newPageId = new HeapPageId(tableId, numOfPages);
-        HeapPage newHp = new HeapPage(newPageId, new byte[BufferPool.getPageSize()]);
-        newHp.insertTuple(t);
-        writePage(newHp);
-        return new ArrayList<Page>(Arrays.asList(new Page[]{newHp}));
+        ArrayList<Page> modifiedPages = new ArrayList<>(); // store modified page to return
         
+        // track if page to insert tuple in has been found
+        boolean found = false;
+
+        
+        HeapPageId pid;
+        HeapPage page = null; // assign null so java doesn't complain
+
+        // insert into curr avail pages with empty slots
+        for (int i = 0; i < this.numPages(); i++){
+            pid = new HeapPageId(this.getId(), i);
+            page = (HeapPage) Database.getBufferPool().getPage(tid, pid, Permissions.READ_WRITE); 
+
+            if (page.getNumEmptySlots() > 0) { // add into empty slot if there is
+                found = true;
+                break;
+            }      
+        }
+        
+        if (found == false) { // make new page if all were full & not inserted yet
+            pid = new HeapPageId(this.getId(), this.numPages());
+            
+            byte[] emptyPage = HeapPage.createEmptyPageData();
+
+            // add new page to file
+            try (RandomAccessFile raf = new RandomAccessFile(file, "rw")){
+                raf.seek(file.length());
+                raf.write(emptyPage); 
+                raf.close();
+            } catch(Exception e){
+                System.err.println(e);
+                throw new IOException("file cannot be written");
+            }
+
+            page = (HeapPage) Database.getBufferPool().getPage(tid, pid, Permissions.READ_WRITE);
+        }
+
+        try {
+            page.insertTuple(t);
+            page.markDirty(true, tid);
+        } catch (Exception e) {
+            throw new DbException("tuple could not be added");
+        }
+        
+        modifiedPages.add(page);
+        return modifiedPages;
         // not necessary for lab1
     }
 
@@ -145,10 +175,34 @@ public class HeapFile implements DbFile {
     public ArrayList<Page> deleteTuple(TransactionId tid, Tuple t) throws DbException,
             TransactionAbortedException {
         // some code goes here
-        HeapPage hp = (HeapPage) Database.getBufferPool().getPage(tid, t.getRecordId().getPageId(), Permissions.READ_WRITE);
-        hp.deleteTuple(t);
-        hp.markDirty(true, tid);
-        return new ArrayList<Page>(Arrays.asList(new Page[]{hp}));
+        ArrayList<Page> modifiedPages = new ArrayList<>(); // store modified page to return
+
+        RecordId recordId = t.getRecordId();
+        
+        if (recordId == null){
+            throw new DbException("tuple cannot be deleted");
+        }
+
+        PageId pid = recordId.getPageId();
+        
+        if (pid.getTableId() != this.getId()){
+            throw new DbException("tuple is not a member of the file");
+        }
+
+        
+
+        HeapPage page = (HeapPage) Database.getBufferPool().getPage(tid, pid, Permissions.READ_WRITE);
+        try {
+            page.deleteTuple(t);
+            page.markDirty(true, tid);
+            modifiedPages.add(page);
+
+        } catch (Exception e) {
+            throw new DbException("tuple cannot be deleted");
+        }
+        
+        return modifiedPages;
+        
         // not necessary for lab1
     }
 
