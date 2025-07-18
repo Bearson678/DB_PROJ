@@ -45,6 +45,9 @@ public class Insert extends Operator {
         this.tableId = tableId;
         this.td = new TupleDesc(new Type[]{Type.INT_TYPE}, new String[]{"inserted_rows"});
 
+        if (!child.getTupleDesc().equals(Database.getCatalog().getTupleDesc(tableId))){
+            throw new DbException("tupledesc of child differs from table into which we are to insert");
+        }
     }
 
     public TupleDesc getTupleDesc() {
