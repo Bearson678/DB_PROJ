@@ -1,12 +1,11 @@
 package simpledb.execution;
 
+import java.util.NoSuchElementException;
 import simpledb.common.DbException;
 import simpledb.common.Type;
 import simpledb.storage.Tuple;
 import simpledb.storage.TupleDesc;
 import simpledb.transaction.TransactionAbortedException;
-
-import java.util.NoSuchElementException;
 
 
 /**
@@ -78,7 +77,11 @@ public class Aggregate extends Operator {
      */
     public String groupFieldName() {
         // some code goes here
-        return this.child.getTupleDesc().getFieldName(this.groupField());
+        try {
+            return this.child.getTupleDesc().getFieldName(gfield);
+        } catch (NoSuchElementException e) {
+            return null;
+        }
     }
 
     /**
