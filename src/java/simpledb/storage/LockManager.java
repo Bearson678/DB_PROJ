@@ -100,4 +100,18 @@ public class LockManager {
 
     }
 
+    public synchronized void releaseAllLocksOnPage(PageId pid) {
+        Lock lock = lockMap.get(pid);
+        if (lock != null) {
+            for (TransactionId tid : new HashSet<>(lock.lockHolders)) {
+                releaseLock(tid, pid); // safely release while iterating
+            }
+        }
+    }
+
+public synchronized Set<TransactionId> getLockHolders(PageId pid) {
+        Lock lock = lockMap.get(pid);
+        if (lock == null) return Collections.emptySet();
+        return new HashSet<>(lock.lockHolders);
+    }
 }

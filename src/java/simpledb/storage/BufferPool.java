@@ -8,8 +8,11 @@ import simpledb.transaction.TransactionAbortedException;
 import simpledb.transaction.TransactionId;
 
 import java.io.*;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -47,6 +50,7 @@ public class BufferPool {
     private final Map<Integer, Page> bufferPool;
     private final LockManager lockManager = new LockManager();
 
+
     /**
      * Creates a BufferPool that caches up to numPages pages.
      *
@@ -71,7 +75,6 @@ public class BufferPool {
     public static void resetPageSize() {
         BufferPool.pageSize = DEFAULT_PAGE_SIZE;
     }
-
     /**
      * Retrieve the specified page with the associated permissions.
      * Will acquire a lock and may block if that lock is held by another
@@ -87,7 +90,7 @@ public class BufferPool {
      * @param pid  the ID of the requested page
      * @param perm the requested permissions on the page
      */
-    public Page getPage(TransactionId tid, PageId pid, Permissions perm)
+ public Page getPage(TransactionId tid, PageId pid, Permissions perm)
             throws TransactionAbortedException, DbException {
 
         lockManager.acquireLock(tid, pid, perm); // 🔐 acquire lock first
@@ -111,6 +114,7 @@ public class BufferPool {
             }
         }
     }
+       
 
     /**
      * Releases the lock on a page.
@@ -135,7 +139,7 @@ public class BufferPool {
     public void transactionComplete(TransactionId tid) {
         // some code goes here
         // not necessary for lab1|lab2
-        lockManager.releaseAllLocks(tid);
+        transactionComplete(tid, true);
     }
 
     /** Return true if the specified transaction has a lock on the specified page */
@@ -152,20 +156,38 @@ public class BufferPool {
      * @param tid    the ID of the transaction requesting the unlock
      * @param commit a flag indicating whether we should commit or abort
      */
-    public void transactionComplete(TransactionId tid, boolean commit) {
-        // some code goes here
-        // not necessary for lab1|lab2
-
+   public void transactionComplete(TransactionId tid, boolean commit) {
+    synchronized (this) {
         if (commit) {
             try {
                 flushPages(tid);
             } catch (IOException e) {
                 e.printStackTrace();
             }
+        } else {
+            // Create a copy of pages to revert to avoid concurrent modification
+            List<PageId> pagesToRevert = new ArrayList<>();
+            for (Page page : bufferPool.values()) {
+                if (tid.equals(page.isDirty())) {
+                    pagesToRevert.add(page.getId());
+                }
+            }
+            
+            for (PageId pid : pagesToRevert) {
+                try {
+                    DbFile dbFile = Database.getCatalog().getDatabaseFile(pid.getTableId());
+                    Page freshPage = dbFile.readPage(pid);
+                    bufferPool.put(pid.hashCode(), freshPage);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
         }
+        
+        // Release locks after all page operations are complete
         lockManager.releaseAllLocks(tid);
     }
-
+}
     /**
      * Add a tuple to the specified table on behalf of transaction tid. Will
      * acquire a write lock on the page the tuple is added to and any other
@@ -286,6 +308,12 @@ public class BufferPool {
     public synchronized void flushPages(TransactionId tid) throws IOException {
         // some code goes here
         // not necessary for lab1|lab2
+        for (Page page : new ArrayList<>(bufferPool.values())) {
+            TransactionId dirtier = page.isDirty();
+            if (dirtier != null && dirtier.equals(tid)) {
+                flushPage(page.getId());
+            }
+        }
     }
 
     /**
@@ -295,22 +323,17 @@ public class BufferPool {
     private synchronized void evictPage() throws DbException {
         // some code goes here
         // not necessary for lab1
-        if (bufferPool.isEmpty()) {
-            throw new DbException("Buffer pool is empty");
-        }
-
-        // LinkedHashMap's iterator returns entries in LRU order
-        Map.Entry<Integer, Page> eldest = bufferPool.entrySet().iterator().next();
-        PageId pidEvict = eldest.getValue().getId();
-
-        try {
-            if (eldest.getValue().isDirty() != null) {
-                flushPage(pidEvict);
+        //NOW DOING NO STEAL - CANNOT EVICT DIRTY PAGES
+    
+for (Map.Entry<Integer, Page> entry : bufferPool.entrySet()) {
+            if (entry.getValue().isDirty() == null) {
+                lockManager.releaseAllLocksOnPage(entry.getValue().getId());
+                discardPage(entry.getValue().getId());
+                return;
             }
-        } catch (Exception e) {
-            throw new DbException("Failed to flush dirty page: " + e);
         }
-
-        discardPage(pidEvict);
+        throw new DbException("All pages are dirty. Cannot evict.");
     }
+
+
 }
