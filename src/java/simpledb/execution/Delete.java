@@ -31,7 +31,6 @@ public class Delete extends Operator {
      */
     private TransactionId t;
     private OpIterator child;
-    private int tableId;
     private TupleDesc td;
     private Boolean called = false;
     public Delete(TransactionId t, OpIterator child) {
@@ -78,17 +77,28 @@ public class Delete extends Operator {
         if(called)return null;
         called = true;
         int count = 0;
-        while (child.hasNext()){
+        BufferPool bp = Database.getBufferPool();
+        try {
+            while (child.hasNext()){
             Tuple nextTuple = child.next();
-            BufferPool bp = Database.getBufferPool();
             try {
             bp.deleteTuple(t, nextTuple);
             count++;                
-            } catch (Exception e) {
-                System.err.println(e);
+            } catch (TransactionAbortedException e) {
+                throw e;  //need to throw transactionAbortedException if it occurs
+            } catch (IOException e) {
+                throw new DbException("IO error during tuple deletion: " + e.getMessage());
+            } catch (DbException e) {
+                throw e;
             }
-
         }
+      } catch (TransactionAbortedException e) {
+        throw e;
+      } catch (DbException e) {
+        throw e;
+      }
+        
+
         Tuple resultTuple = new Tuple(this.getTupleDesc());
         resultTuple.setField(0, new IntField(count));
         return resultTuple;

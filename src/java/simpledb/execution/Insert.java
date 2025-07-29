@@ -1,5 +1,7 @@
 package simpledb.execution;
 
+import java.io.IOException;
+
 import simpledb.common.Database;
 import simpledb.common.DbException;
 import simpledb.common.Type;
@@ -89,24 +91,32 @@ public class Insert extends Operator {
     protected Tuple fetchNext() throws TransactionAbortedException, DbException { //inserts tuples from the child only once then return a single tuple to show
                                                                                 // How many rows were inserted
                                                                                 //Need boolean flag if we keep calling the fetchNext, else we will insert more tuples again
-        // some code goes here
-        if(called)return null;
-        called = true;
-        int count = 0;
-        while (child.hasNext()){
-            Tuple nextTuple = child.next();
-            BufferPool bp = Database.getBufferPool();
-            try {
-            bp.insertTuple(this.t, tableId, nextTuple);
-            count++;                
-            } catch (Exception e) {
-                System.err.println(e);
-            }
+      if(called) return null;
+      called = true;
+      
+      int count = 0;
+      BufferPool bufferpool = Database.getBufferPool();
 
+      try {
+        while(child.hasNext()){
+            Tuple nextTuple = child.next();
+            try{
+                bufferpool.insertTuple(t, tableId, nextTuple);
+                count++;
+            } catch (TransactionAbortedException e) {
+                throw e; //need to throw transactionAbortedException if it occurs
+            }catch(IOException e) {
+                throw new DbException("IO Exception while inserting tuple: " + e.getMessage());
+            }
         }
-        Tuple resultTuple = new Tuple(this.getTupleDesc());
-        resultTuple.setField(0, new IntField(count));
-        return resultTuple;
+      } catch (TransactionAbortedException e) {
+        throw e;
+      } catch (DbException e) {
+        throw e;
+      }
+      Tuple resultTuple = new Tuple(this.getTupleDesc());
+      resultTuple.setField(0, new IntField(count));
+      return resultTuple;
     }
 
     @Override
