@@ -225,8 +225,8 @@ public class BufferPool {
             throws DbException, IOException, TransactionAbortedException {
          // some code goes here
         // not necessary for lab1       
-        HeapFile hf = (HeapFile) Database.getCatalog().getDatabaseFile(tableId);
-        List<Page> pageList = hf.insertTuple(tid, t); // list of dirty pages
+        DbFile dbfile = Database.getCatalog().getDatabaseFile(tableId);
+        List<Page> pageList = dbfile.insertTuple(tid, t); // list of dirty pages
         
         // Cache dirty pages in buffer pool
         for (Page page : pageList) {
@@ -254,9 +254,9 @@ public class BufferPool {
         // not necessary for lab1
         
         int tableId = t.getRecordId().getPageId().getTableId();
-        HeapFile hf = (HeapFile) Database.getCatalog().getDatabaseFile(tableId);
+        DbFile dbfile = Database.getCatalog().getDatabaseFile(tableId);
         
-        List<Page> pageList = hf.deleteTuple(tid, t);
+        List<Page> pageList = dbfile.deleteTuple(tid, t);
         
         // Cache dirty pages in buffer pool
         for (Page page : pageList) {
@@ -310,8 +310,8 @@ public class BufferPool {
         // not necessary for lab1        
         Page page = bufferPool.get(pid);
         if (page != null && page.isDirty() != null) {
-            HeapFile hf = (HeapFile) Database.getCatalog().getDatabaseFile(pid.getTableId());
-            hf.writePage(page);
+            DbFile dbfile = Database.getCatalog().getDatabaseFile(pid.getTableId());
+            dbfile.writePage(page);
             page.markDirty(false, null);
         }
     }

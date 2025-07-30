@@ -188,7 +188,28 @@ public class BTreeFile implements DbFile {
                                        Field f)
 					throws DbException, TransactionAbortedException {
 		// some code goes here
-        return null;
+		if(pid.pgcateg() == BTreePageId.LEAF ){
+			return (BTreeLeafPage) getPage(tid, dirtypages, pid, perm);
+		}
+		BTreeInternalPage internalPage = (BTreeInternalPage) getPage(
+            tid, dirtypages, pid, Permissions.READ_ONLY);
+	
+		Iterator<BTreeEntry> it = internalPage.iterator();
+		if(f == null){ //if null, use the left most child every time
+			BTreeEntry firstEntry = it.next();
+			BTreePageId childPid = firstEntry.getLeftChild();
+			return findLeafPage(tid, dirtypages,childPid,perm,f);
+		}
+
+		BTreeEntry prevBTreeEntry = null;
+		while(it.hasNext()){
+			BTreeEntry entry = it.next();
+			if(f.compare(Op.LESS_THAN, entry.getKey())||f.compare(Op.EQUALS,entry.getKey())){
+				return findLeafPage(tid,dirtypages,entry.getLeftChild(), perm, f);
+			}
+			prevBTreeEntry = entry;
+		}
+        return findLeafPage(tid,dirtypages,prevBTreeEntry.getRightChild(), perm, f);
 	}
 	
 	/**
@@ -239,7 +260,54 @@ public class BTreeFile implements DbFile {
 		// the new entry.  getParentWithEmtpySlots() will be useful here.  Don't forget to update
 		// the sibling pointers of all the affected leaf pages.  Return the page into which a 
 		// tuple with the given key field should be inserted.
-        return null;
+
+		//create a new empty leaf page
+		BTreeLeafPage createdLeafPage = (BTreeLeafPage) getEmptyPage(tid, dirtypages, BTreePageId.LEAF);
+		Iterator<Tuple> reverseIt = page.reverseIterator();
+		int tuplesToMove = page.getNumTuples()/2;
+		List<Tuple> movedTuples = new ArrayList<>();
+		while(tuplesToMove>0 && reverseIt.hasNext()){
+			Tuple t = reverseIt.next();
+			page.deleteTuple(t);
+			movedTuples.add(t);
+			tuplesToMove--;
+		}
+		Collections.reverse(movedTuples);
+		for(Tuple t: movedTuples){
+			createdLeafPage.insertTuple(t);
+		}
+
+		//Update the sibiling pointers
+		BTreePageId prevRightSibilingId = page.getRightSiblingId();
+		createdLeafPage.setRightSiblingId(prevRightSibilingId);
+		createdLeafPage.setLeftSiblingId(page.getId());
+		page.setRightSiblingId(createdLeafPage.getId());
+
+		if(prevRightSibilingId !=null){
+			BTreeLeafPage prevRightSibiling = (BTreeLeafPage) getPage(tid, dirtypages, prevRightSibilingId, Permissions.READ_WRITE);
+			prevRightSibiling.setLeftSiblingId(createdLeafPage.getId());
+			dirtypages.put(prevRightSibilingId, prevRightSibiling); //because the original right page has a change in position
+		}
+
+		Field splitKeyField = createdLeafPage.iterator().next().getField(page.keyField); //get the middle key of the original page
+		BTreeInternalPage parent = getParentWithEmptySlots(tid, dirtypages, page.getParentId(), splitKeyField); //create empty parent page
+		BTreeEntry newEntry = new BTreeEntry(splitKeyField, page.getId(), createdLeafPage.getId()); // create new entry
+		parent.insertEntry(newEntry);
+
+		createdLeafPage.setParentId(parent.getId()); // the new created leaf page parent is the original parent
+
+		//mark them as dirty as we have modified these pages
+		dirtypages.put(page.getId(), page);
+		dirtypages.put(createdLeafPage.getId(),createdLeafPage);
+		dirtypages.put(parent.getId(),parent);
+
+		//return the correct page
+		if(field == null || field.compare(Op.LESS_THAN,splitKeyField)){ 
+			return page;
+		}else{
+			return createdLeafPage;
+		}
+        
 		
 	}
 	
@@ -266,20 +334,64 @@ public class BTreeFile implements DbFile {
 	 * @throws TransactionAbortedException
 	 */
 	public BTreeInternalPage splitInternalPage(TransactionId tid, Map<PageId, Page> dirtypages,
-			BTreeInternalPage page, Field field) 
-					throws DbException, IOException, TransactionAbortedException {
+			BTreeInternalPage page, Field field)
+			throws DbException, IOException, TransactionAbortedException {
 		// some code goes here
-        //
-        // Split the internal page by adding a new page on the right of the existing
-		// page and moving half of the entries to the new page.  Push the middle key up
-		// into the parent page, and recursively split the parent as needed to accommodate
-		// the new entry.  getParentWithEmtpySlots() will be useful here.  Don't forget to update
-		// the parent pointers of all the children moving to the new page.  updateParentPointers()
-		// will be useful here.  Return the page into which an entry with the given key field
+		//
+		// Split the internal page by adding a new page on the right of the existing
+		// page and moving half of the entries to the new page. Push the middle key up
+		// into the parent page, and recursively split the parent as needed to
+		// accommodate
+		// the new entry. getParentWithEmtpySlots() will be useful here. Don't forget to
+		// update
+		// the parent pointers of all the children moving to the new page.
+		// updateParentPointers()
+		// will be useful here. Return the page into which an entry with the given key
+		// field
 		// should be inserted.
-		return null;
+
+		BTreeInternalPage newPage = (BTreeInternalPage) getEmptyPage(tid, dirtypages, BTreePageId.INTERNAL);
+
+		Iterator<BTreeEntry> reverseIt = page.reverseIterator();
+		int numToMove = page.getNumEntries() / 2;
+		List<BTreeEntry> movedEntries = new ArrayList<>();
+
+		while (numToMove > 0 && reverseIt.hasNext()) {
+			BTreeEntry entry = reverseIt.next();
+			page.deleteKeyAndRightChild(entry);
+			movedEntries.add(entry);
+			numToMove--;
+		}
+
+		Collections.reverse(movedEntries);
+		for (BTreeEntry entry : movedEntries) {
+			newPage.insertEntry(entry);
+		}
+
+		BTreeEntry middle = reverseIt.hasNext() ? reverseIt.next() : null;
+		if (middle != null) {
+			page.deleteKeyAndRightChild(middle);
+		}
+
+		BTreePageId parentPageId = page.getParentId();
+		BTreeInternalPage parent = getParentWithEmptySlots(tid, dirtypages, parentPageId, middle.getKey());
+		BTreeEntry parentEntry = new BTreeEntry(middle.getKey(), page.getId(), newPage.getId());
+		parent.insertEntry(parentEntry);
+
+		updateParentPointers(tid, dirtypages, newPage);
+
+		dirtypages.put(page.getId(), page);
+		dirtypages.put(newPage.getId(), newPage);
+		dirtypages.put(parentPageId, parent);
+
+		if (field == null || field.compare(Op.LESS_THAN, middle.getKey())) {
+			return page;
+		} else {
+			return newPage;
+		}
+
 	}
-	
+
 	/**
 	 * Method to encapsulate the process of getting a parent page ready to accept new entries.
 	 * This may mean creating a page to become the new root of the tree, splitting the existing 
