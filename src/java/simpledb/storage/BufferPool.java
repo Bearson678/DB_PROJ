@@ -37,7 +37,7 @@ public class BufferPool {
     public static final int DEFAULT_PAGES = 50;
     
     private final int numPages;
-    private final Map<PageId, Page> bufferPool;
+    private final Map<Integer, Page> bufferPool;
     private final LockManager lockManager = new LockManager();
 
     /**
@@ -47,7 +47,7 @@ public class BufferPool {
      */
     public BufferPool(int numPages) {
         this.numPages = numPages;
-        this.bufferPool = new ConcurrentHashMap<PageId, Page>();
+        this.bufferPool = new ConcurrentHashMap<Integer, Page>();
     }
 
     public static int getPageSize() {
@@ -86,7 +86,7 @@ public class BufferPool {
         
         try {
             // Check if page is already in buffer pool
-            Page page = bufferPool.get(pid);
+            Page page = bufferPool.get(pid.hashCode());
             if (page != null) {
                 return page;
             }
@@ -96,7 +96,7 @@ public class BufferPool {
             
             synchronized (this) {
                 // Double-check in case another thread loaded the page
-                Page existingPage = bufferPool.get(pid);
+                Page existingPage = bufferPool.get(pid.hashCode());
                 if (existingPage != null) {
                     return existingPage;
                 }
@@ -105,13 +105,11 @@ public class BufferPool {
                     evictPage();
                 }
                 
-                bufferPool.put(pid, pageToLoad);
+                bufferPool.put(pid.hashCode(), pageToLoad);
                 return pageToLoad;
             }
             
         } catch (Exception e) {
-            // If anything goes wrong, release the lock we just acquired
-            lockManager.release(tid, pid);
             if (e instanceof TransactionAbortedException) {
                 throw (TransactionAbortedException) e;
             } else if (e instanceof DbException) {
@@ -198,7 +196,7 @@ public class BufferPool {
             try {
                 DbFile dbFile = Database.getCatalog().getDatabaseFile(pid.getTableId());
                 Page freshPage = dbFile.readPage(pid);
-                bufferPool.put(pid, freshPage);
+                bufferPool.put(pid.hashCode(), freshPage);
             } catch (Exception e) {
                 e.printStackTrace();
                 // Continue reverting other pages even if one fails
@@ -231,7 +229,7 @@ public class BufferPool {
         // Cache dirty pages in buffer pool
         for (Page page : pageList) {
             page.markDirty(true, tid);
-            bufferPool.put(page.getId(), page);
+            bufferPool.put(page.getId().hashCode(), page);
         }
     }
 
@@ -261,7 +259,7 @@ public class BufferPool {
         // Cache dirty pages in buffer pool
         for (Page page : pageList) {
             page.markDirty(true, tid); 
-            bufferPool.put(page.getId(), page); //add the dirty page to the buffer pool
+            bufferPool.put(page.getId().hashCode(), page); //add the dirty page to the buffer pool
         }
     }
 
@@ -273,15 +271,11 @@ public class BufferPool {
     public synchronized void flushAllPages() throws IOException {
         // some code goes here
         // not necessary for lab1
-        // create a copy of the buffer pool to avoid concurrent modification
-        List<Page> pages = new ArrayList<>(bufferPool.values());
-
-        // Flush each dirty page
-        for (Page page : pages) {
-            if (page != null && page.isDirty() != null) {
-                flushPage(page.getId());
-            }
-        }
+for (Page page : bufferPool.values()) {
+    if (page != null && page.isDirty() != null) {
+        flushPage(page.getId());
+    }
+}
     }
 
     /**
@@ -296,7 +290,7 @@ public class BufferPool {
     public synchronized void discardPage(PageId pid) {
         // some code goes here
         // not necessary for lab1
-        bufferPool.remove(pid);
+        bufferPool.remove(pid.hashCode());
         lockManager.releaseAllLocksOnPage(pid); // Release locks on this page
     }
 
@@ -308,11 +302,14 @@ public class BufferPool {
     private synchronized void flushPage(PageId pid) throws IOException {
         // some code goes here
         // not necessary for lab1        
-        Page page = bufferPool.get(pid);
-        if (page != null && page.isDirty() != null) {
-            DbFile dbfile = Database.getCatalog().getDatabaseFile(pid.getTableId());
-            dbfile.writePage(page);
-            page.markDirty(false, null);
+        if (!bufferPool.containsKey(pid.hashCode())) {
+            return;
+        }
+        Page p = bufferPool.get(pid.hashCode());
+        if (p.isDirty() != null) {
+            DbFile df = Database.getCatalog().getDatabaseFile(pid.getTableId());
+            df.writePage(p);
+            p.markDirty(false, null);
         }
     }
 
@@ -347,12 +344,12 @@ public class BufferPool {
         // not necessary for lab1
         //NOW DOING NO STEAL - CANNOT EVICT DIRTY PAGES        
         // Find first clean page to evict (NO STEAL policy)
-        for (Map.Entry<PageId, Page> entry : bufferPool.entrySet()) {
+        for (Map.Entry<Integer, Page> entry : bufferPool.entrySet()) {
             Page page = entry.getValue();
             if (page.isDirty() == null) {
                 // Found a clean page - safe to evict
-                PageId pid = entry.getKey();
-                bufferPool.remove(pid);
+                PageId pid = page.getId();
+                bufferPool.remove(pid.hashCode());
                 lockManager.releaseAllLocksOnPage(pid); // Release locks on this page
                 return;
             }
