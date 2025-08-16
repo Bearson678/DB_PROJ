@@ -1,266 +1,277 @@
 package simpledb.storage;
-
 import simpledb.common.Permissions;
-import simpledb.transaction.TransactionAbortedException;
 import simpledb.transaction.TransactionId;
-
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class LockManager {
 
     public class LocksOnPage {
 
-        private TransactionId exclusiveLock; // For READ_WRITE locks
-        private Set<TransactionId> sharedLocks; // For READ_ONLY locks
+        private boolean exclusive; // determines if it is an READ_WRITE lock
+        private HashMap<TransactionId, Boolean> tidLockHolder; //HashMap of tids holding a lock
+        private int waitingWriters;
 
         public LocksOnPage() {
-            this.sharedLocks = new HashSet<>();
-            this.exclusiveLock = null;
+            exclusive = false;
+            tidLockHolder = new HashMap<>();
+            waitingWriters = 0;
         }
 
-        public void addSharedLock(TransactionId tid) {
-            this.sharedLocks.add(tid);
-        }
-
-        public void removeSharedLock(TransactionId tid) {
-            this.sharedLocks.remove(tid);
-        }
-
-        public void removeExclusiveLock(TransactionId tid) {
-            if (tid.equals(exclusiveLock)) {
-                exclusiveLock = null;
+        public void acquireReadLock(TransactionId tid) {
+            synchronized (this) {
+                if (tidLockHolder.containsKey(tid)) {
+                    return;
+                }
+                try {
+                    while (exclusive || waitingWriters > 0) { // if currently written, or transactions are waiting
+                        this.wait();
+                    }
+                    tidLockHolder.put(tid, false); // Read Lock
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt(); // pause the thread
+                    throw new RuntimeException("Thread interrupted when acquiring lock");
+                }
             }
         }
 
-        public void setExclusiveLock(TransactionId tid) {
-            this.exclusiveLock = tid;
-        }
-
-        public boolean exclusivelyLocked() {
-            return this.exclusiveLock != null;
-        }
-
-        public boolean holdsSharedLock(TransactionId tid) {
-            return this.sharedLocks.contains(tid);
-        }
-
-        public boolean holdsExclusiveLock(TransactionId tid) {
-            if (this.exclusiveLock != null) {
-                return this.exclusiveLock.equals(tid);
+        public void acquireReadWriteLock(TransactionId tid) {
+            synchronized (this) {
+                try {
+                    if (tidLockHolder.getOrDefault(tid, false)) { // if already holding a lock
+                        return;
+                    }
+                    waitingWriters++;
+                    while (exclusive || tidLockHolder.size() > (tidLockHolder.containsKey(tid) ? 1 : 0)) {
+                        this.wait();
+                    }
+                    waitingWriters--;
+                    if (waitingWriters < 0) {
+                        waitingWriters = 0;
+                    }
+                    exclusive = true;
+                    tidLockHolder.put(tid, true); // upgrade from read to write or put in new write lock
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt(); // pause the thread
+                    throw new RuntimeException("Thread interrupted when acquiring lock");
+                }
             }
-            return false;
         }
 
-        public boolean isLocked() {
-            return this.exclusiveLock != null || this.sharedLocks.size() != 0;
+        public void unlockRead(TransactionId tid) {
+            synchronized (this) {
+                if (tidLockHolder.containsKey(tid) && !tidLockHolder.get(tid)) { // if getting a read lock
+                    tidLockHolder.remove(tid);
+                }
+                this.notifyAll();
+            }
+        }
+
+        public void unlockWrite(TransactionId tid) {
+            synchronized (this) {
+                if (tidLockHolder.containsKey(tid) && tidLockHolder.get(tid)) { // if getting a read lock
+                    tidLockHolder.remove(tid);
+                    exclusive = false;
+                }
+                this.notifyAll();
+            }
+        }
+
+        public synchronized Set<TransactionId> lockholders() {
+            return tidLockHolder.keySet();
+        }
+
+        public boolean isExclusive() {
+            return exclusive;
+        }
+
+        public synchronized boolean canRead(TransactionId tid) {
+            return tidLockHolder.containsKey(tid);
+        }
+
+        public synchronized boolean canReadWrite(TransactionId tid) {
+            return tidLockHolder.containsKey(tid) && tidLockHolder.get(tid);
         }
     }
 
     private Map<PageId, LocksOnPage> locks;
-    private Map<TransactionId, Set<TransactionId>> dependencies; // each transaction maps to a set of transactions it is waiting on
+    private Map<TransactionId, Set<PageId>> tidMap;
+    private Map<TransactionId, HashSet<TransactionId>> dependencies; // each transaction maps to a set of
+                                                                         // transactions it is waiting on
 
     public LockManager() {
-        this.locks = new HashMap<>();
-        this.dependencies = new HashMap<>();
+        this.locks = new ConcurrentHashMap<>();
+        this.tidMap = new ConcurrentHashMap<>();
+        this.dependencies = new ConcurrentHashMap<>();
     }
 
-    // Checks if there are any deadlocks relating to transaction tid
-    public synchronized boolean deadlocked(TransactionId tid) {
-        if (!this.dependencies.containsKey(tid)) {
+    boolean hasCycle(TransactionId tid, PageId pid, Permissions perm) { // use DFS to detect cycles
+        if (!getLock(pid).isExclusive() && perm == Permissions.READ_ONLY) {
             return false;
         }
-        
-        Set<TransactionId> visited = new HashSet<>();
-        Set<TransactionId> stack = new HashSet<>();
-        return hasCycle(tid, visited, stack);
-    }
-
-    private boolean hasCycle(TransactionId tid, Set<TransactionId> visited, Set<TransactionId> stack) { //use DFS to detect cycles
-        if (stack.contains(tid)) {
-            return true; // Found a cycle
-        }
-        if (visited.contains(tid)) {
-            return false; 
-        }
-        
-        visited.add(tid);
-        stack.add(tid);
-        
-        if (dependencies.containsKey(tid)) {
-            for (TransactionId dependency : dependencies.get(tid)) {
-                if (hasCycle(dependency, visited, stack)) {
-                    return true;
-                }
+        ArrayList<TransactionId> visitedList = new ArrayList<>();
+        visitedList.add(tid);
+        HashSet<TransactionId> holdersSet = new HashSet<>(getLockHoldersTID(pid));
+        holdersSet.remove(tid);
+        for (TransactionId holderTID : holdersSet) {
+            if (checkWaiting(new HashMap<>(dependencies), holderTID, new ArrayList<>(visitedList))) {
+                return true;
             }
         }
-        
-        stack.remove(tid);
         return false;
     }
 
-    //updates the dependency graph by removing the transaction tid
-    private void removeDependencies(TransactionId tid) {
-        dependencies.remove(tid);
-        
-        // Remove this transaction from other transactions' dependency lists
-        for (Set<TransactionId> deps : dependencies.values()) {
-            deps.remove(tid);
+    //helper function to check if there are any other dependencies waiting on the lock
+    private synchronized boolean checkWaiting(HashMap<TransactionId, HashSet<TransactionId>> waitForGCopy,
+            TransactionId waiter, ArrayList<TransactionId> visitedList) {
+        if (visitedList.contains(waiter)) {
+            return true;
+        }
+
+        visitedList.add(waiter);
+        HashSet<TransactionId> holdersSet = waitForGCopy.get(waiter);
+        for (TransactionId holderTID : holdersSet) {
+            if (checkWaiting(waitForGCopy, holderTID, new ArrayList<>(visitedList))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    //add a new tid waiting and update the list of waiting tid
+    public synchronized void addDependencies(TransactionId waiter, TransactionId waitOn) {
+        HashSet<TransactionId> waitingOnSet = dependencies.getOrDefault(waiter, new HashSet<>());
+        waitingOnSet.add(waitOn);
+        dependencies.put(waiter, waitingOnSet);
+    }
+
+    // updates the dependency graph by removing the transaction tid
+    void removeDependencies(TransactionId waiter, TransactionId holder) {
+        if (dependencies.containsKey(waiter)) {
+            HashSet<TransactionId> holdersSet = dependencies.getOrDefault(waiter, new HashSet<>());
+            holdersSet.remove(holder);
+            if (holdersSet.isEmpty()) {
+                dependencies.remove(waiter);
+            } else {
+                dependencies.put(waiter, holdersSet);
+            }
         }
     }
 
-    public void acquire(TransactionId tid, PageId pid, Permissions perms) //acquires a lock on a particular page
-            throws TransactionAbortedException {
-
-        while (true) {
-            synchronized (this) {
-                LocksOnPage lock = locks.getOrDefault(pid, new LocksOnPage());
-                
-                // if requesting shared lock
-                if (perms == Permissions.READ_ONLY) {
-                    // Can acquire shared lock if: no exlusive lock or already holds exclusive lock
-                    if (!lock.exclusivelyLocked() || lock.holdsExclusiveLock(tid)) {
-                        removeDependencies(tid); 
-                        lock.addSharedLock(tid); //update the shared locks
-                        locks.put(pid, lock); //update the locks map
-                        return; 
-                    } else {
-                        dependencies.computeIfAbsent(tid, k -> new HashSet<>())
-                                   .add(lock.exclusiveLock); // add the exclusive lock holder to dependencies, means the calling transaction must wait
-                    }
-                } 
-                // if requesting exclusive lock
-                else {
-                    if (lock.holdsExclusiveLock(tid)) {
-                        removeDependencies(tid);
-                        return; 
-                    }
-                    
-                    
-                    if (!lock.isLocked()) { // No locks on this page, can acquire exclusive lock
-                        removeDependencies(tid);
-                        lock.setExclusiveLock(tid);
-                        locks.put(pid, lock);
-                        return; 
-                    }
-                    
-                    // handles lock upgrade from read to write
-                    if (lock.holdsSharedLock(tid) && lock.sharedLocks.size() == 1 && !lock.exclusivelyLocked()) {
-                        removeDependencies(tid);
-                        lock.removeSharedLock(tid);
-                        lock.setExclusiveLock(tid);
-                        locks.put(pid, lock);
-                        return; 
-                    } else {
-                        // Must wait for all current lock holders
-                        Set<TransactionId> waitFor = dependencies.computeIfAbsent(tid, k -> new HashSet<>());
-                        
-                        if (lock.exclusivelyLocked()) {
-                            waitFor.add(lock.exclusiveLock);
-                        } else {
-                            // Wait for all shared lock holders (except ourselves)
-                            for (TransactionId sharedHolder : lock.sharedLocks) {
-                                if (!sharedHolder.equals(tid)) {
-                                    waitFor.add(sharedHolder);
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                // Check for deadlock after updating dependencies
-                if (deadlocked(tid)) {
-                    removeDependencies(tid); // if deadlocked, remove dependencies
-                    System.out.println("Deadlock detected for transaction " + tid);
-                    throw new TransactionAbortedException();
-                }
-            }
-            
+    //helper function to acquire read or write lock
+    public void acquireLock(PageId pid, TransactionId tid, Permissions perm) {
+        switch (perm) {
+            case READ_ONLY:
+                acquireReadLock(pid, tid);
+                break;
+            case READ_WRITE:
+                acquireReadWriteLock(pid, tid);
+                break;
         }
     }
 
     // Releases the lock on a page held by transaction tid
-    public synchronized void release(TransactionId tid, PageId pid) {
-        if (!locks.containsKey(pid)) {
-            return; // No locks on this page
-        }
-        
-        LocksOnPage lock = locks.get(pid);
-        
-        if (lock.holdsSharedLock(tid)) {
-            lock.removeSharedLock(tid);
-        }
-        
-        if (lock.holdsExclusiveLock(tid)) {
-            lock.removeExclusiveLock(tid);
-        }
-        
-        if (lock.sharedLocks.isEmpty() && !lock.exclusivelyLocked()) {
-            locks.remove(pid);
-        }
-        
-        removeDependencies(tid); //after releasing the lock, remove the transaction from dependencies
-        notifyAll(); //wake up any waiting threads
-    }
-
-    //checks if any transaction holds a lock on the page
-    public synchronized boolean isLocked(PageId pid) {
-        LocksOnPage lock = locks.get(pid);
-        return lock != null && lock.isLocked();
-    }
-
-    // check if the transaction tid holds a lock on the page pid
-    public synchronized boolean holdsLock(TransactionId tid, PageId pid) {
-        LocksOnPage lock = locks.get(pid);
-        if (lock == null) {
-            return false;
-        }
-        return lock.holdsExclusiveLock(tid) || lock.holdsSharedLock(tid);
-    }
-
-    // Removes all locks held by transaction 
-    public synchronized void removeAllHeld(TransactionId tid) {
-        List<PageId> toRelease = new ArrayList<>();
-        
-        // Find all pages where this transaction holds locks
-        for (Map.Entry<PageId, LocksOnPage> entry : locks.entrySet()) {
-            PageId pid = entry.getKey();
-            LocksOnPage lock = entry.getValue();
-            
-            if (lock.holdsExclusiveLock(tid) || lock.holdsSharedLock(tid)) {
-                toRelease.add(pid);
-            }
-        }
-        
-        // Release all locks found
-        for (PageId pid : toRelease) {
-            release(tid, pid);
+    public void releaseLock(PageId pid, TransactionId tid, Permissions perm) {
+        switch (perm) {
+            case READ_ONLY:
+                releaseReadLock(pid, tid);
+                break;
+            case READ_WRITE:
+                releaseReadWriteLock(pid, tid);
+                break;
         }
     }
 
-
-    // Release all locks on a specific page
-    public synchronized void releaseAllLocksOnPage(PageId pid) {
-        if (!locks.containsKey(pid)) {
+    public void acquireReadLock(PageId pid, TransactionId tid) {
+        if (tidMap.containsKey(tid) && tidMap.get(tid).contains(pid)) {
             return;
         }
-        
+        if (!hasPageLock(pid, tid)) {
+            LocksOnPage lock = getLockOrDefault(pid, tid);
+            lock.acquireReadLock(tid);
+        } else {
+            LocksOnPage lock = locks.get(pid);
+            if (!lock.canRead(tid)) {
+                lock.acquireReadLock(tid);
+            }
+        }
+        addToTIDMap(pid, tid);
+    }
+
+    public void acquireReadWriteLock(PageId pid, TransactionId tid) {
+        if (!hasPageLock(pid, tid)) {
+            LocksOnPage lock = getLockOrDefault(pid, tid);
+            lock.acquireReadWriteLock(tid);
+        } else {
+            LocksOnPage lock = locks.get(pid);
+            if (!lock.canReadWrite(tid)) {
+                lock.acquireReadWriteLock(tid);
+            }
+        }
+        addToTIDMap(pid, tid);
+    }
+
+    public void releaseReadLock(PageId pid, TransactionId tid) {
         LocksOnPage lock = locks.get(pid);
-        
-        // Get all transactions that hold locks on this page
-        Set<TransactionId> lockHolders = new HashSet<>();
-        lockHolders.addAll(lock.sharedLocks);
-        if (lock.exclusivelyLocked()) {
-            lockHolders.add(lock.exclusiveLock);
+        lock.unlockRead(tid);
+        removeFromTIDMap(pid, tid);
+    }
+
+    public void releaseReadWriteLock(PageId pid, TransactionId tid) {
+        LocksOnPage lock = locks.get(pid);
+        lock.unlockWrite(tid);
+        removeFromTIDMap(pid, tid);
+    }
+
+    public LocksOnPage getLockOrDefault(PageId pid, TransactionId tid) {
+        return locks.computeIfAbsent(pid, k -> new LocksOnPage());
+    }
+
+    public LocksOnPage getLock(PageId pid) {
+        return locks.get(pid);
+    }
+
+    public void addToTIDMap(PageId pid, TransactionId tid) {
+        Set<PageId> pgSet = getTransactionPIDs(tid);
+        if (!pgSet.contains(pid)) {
+            pgSet.add(pid);
         }
-        
-        // Remove the page from locks
-        locks.remove(pid);
-        
-        // release all locks held by these transactions on that particular page
-        for (TransactionId tid : lockHolders) {
-            release(tid, pid);
+    }
+
+    public void removeFromTIDMap(PageId pid, TransactionId tid) {
+        if (tidMap.containsKey(tid)) {
+            Set<PageId> pgSet = tidMap.get(tid);
+            pgSet.remove(pid);
+            if (pgSet.isEmpty()) {
+                tidMap.remove(tid);
+            }
         }
-        
+    }
+
+    //add in a new hashset for a new tid
+    public Set<PageId> getTransactionPIDs(TransactionId tid) {
+        return tidMap.computeIfAbsent(tid, k -> new HashSet<>());
+    }
+
+    //check if the transction has a lock on the page id
+    public boolean hasPageLock(PageId pid, TransactionId tid) {
+        return getTransactionPIDs(tid).contains(pid);
+    }
+
+    //get all tids holding a lock on that pageid
+    public HashSet<TransactionId> getLockHoldersTID(PageId pid) {
+        HashSet<TransactionId> holders = new HashSet<>();
+        for (HashMap.Entry<TransactionId, Set<PageId>> e : tidMap.entrySet()) {
+            if (e.getValue().contains(pid)) {
+                holders.add(e.getKey());
+            }
+        }
+        return holders;
+    }
+
+    //check if the pid has a lock on it
+    public boolean hasLock(PageId pid) {
+        return locks.containsKey(pid);
     }
 
 }

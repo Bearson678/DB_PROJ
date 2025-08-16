@@ -2,6 +2,7 @@ package simpledb.systemtest;
 
 import simpledb.common.Database;
 import simpledb.execution.IndexPredicate;
+import simpledb.index.BTreeChecker;
 import simpledb.index.BTreeFile;
 import simpledb.index.BTreeUtility;
 import simpledb.storage.*;
@@ -9,6 +10,7 @@ import simpledb.storage.*;
 import static org.junit.Assert.*;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.BlockingQueue;
